@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZhanFu Browser"
+  short_description: "ZhanFu WebDriver store automation, sales scraping, and safe order mapping"
+  default_prompt: "Use $zhanfu-browser to operate ZhanFu WebDriver stores on this machine, wait for real CDP endpoints, keep stores open when follow-up work is likely, and extract safe sales, review, or order data without exposing private contact details."

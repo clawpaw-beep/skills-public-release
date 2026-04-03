@@ -1,0 +1,13 @@
+{
+  "stores": [2376919, 2273435, 2337386, 2276096],
+  "sales_limit": 1,
+  "skip_sales": false,
+  "skip_fmcg_diagnose": false,
+  "run_fmcg_order_lookup": true,
+  "timeout_sales": 240,
+  "timeout_diagnose": 180,
+  "timeout_fmcg_order_lookup": 300,
+  "retry_failed_sales_batches": true,
+  "retry_failed_batches_once": true,
+  "sleep_between_batches_seconds": 3
+}

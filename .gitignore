@@ -1,0 +1,6 @@
+**/__pycache__/
+**/*.pyc
+**/local_config.json
+**/runs_index.json
+**/daily_run_*/
+**/zhanfu_collect_runs/

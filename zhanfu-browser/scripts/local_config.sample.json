@@ -1,0 +1,9 @@
+{
+  "zhanfu_api_url": "http://127.0.0.1:45008",
+  "zhanfu_binary_path": "C:\\path\\to\\ZhanFu\\站斧.exe",
+  "output_dir": "C:\\path\\to\\Documents\\zhanfu_collect_runs",
+  "documents_dir": "C:\\path\\to\\Documents",
+  "fmcg_store_id": 1000000,
+  "default_store_ids": [1000000, 1000001],
+  "default_input_csv": "C:\\path\\to\\Documents\\fmcg_negative_review_followup.csv"
+}
