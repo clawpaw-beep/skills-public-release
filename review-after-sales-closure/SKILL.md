@@ -16,8 +16,11 @@ Use this skill when you want a portable, repeatable workflow for:
 
 ## Package location
 
-Project root:
-- `C:\Users\9400\.openclaw\workspace\twilio-review-mvp`
+The skill lives at:
+- `~/.openclaw/skills/review-after-sales-closure/`
+
+Project root (where the full workflow app lives on the machine):
+- Set by the machine owner; typically `~/.openclaw/workspace/review-after-sales-closure/` or a custom path
 
 Portable skill assets:
 - `skills\review-after-sales-closure\references\architecture.md`
