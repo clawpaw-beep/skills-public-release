@@ -1,80 +1,105 @@
 ---
 name: review-after-sales-closure
-description: End-to-end negative-review after-sales closure workflow. Use when the goal is to import negative-review exports (especially from ZhanFu), classify issue reasons, queue and send SMS via Twilio, sync delivery status, process replies, and track refund/resolution/review-followup state in a portable way across machines.
+description: End-to-end negative-review after-sales closure workflow. Use when the goal is to collect negative reviews from ZhanFu, send SMS via Twilio to buyers, verify review deletion via zhanfu-browser, and track refund eligibility in a file-based case state.
 ---
 
 # review-after-sales-closure
 
-Use this skill when you want a portable, repeatable workflow for:
-- importing negative-review/contact CSVs
-- classifying review reasons
-- generating a send queue
-- sending after-sales SMS via Twilio
-- syncing message delivery status
-- processing replies into manual follow-up / refund review
-- tracking closure state across refund, resolution, and review follow-up
+## Overview
 
-## Package location
+An **OpenClaw-native** after-sales skill. No external FastAPI app needed.
 
-The skill lives at:
-- `~/.openclaw/skills/review-after-sales-closure/`
+**Dependencies:** `zhanfu-browser` skill (for ZhanFu WebDriver access)
 
-Project root (where the full workflow app lives on the machine):
-- Set by the machine owner; typically `~/.openclaw/workspace/review-after-sales-closure/` or a custom path
+## Workflow
 
-Portable skill assets:
-- `skills\review-after-sales-closure\references\architecture.md`
-- `skills\review-after-sales-closure\references\csv-schema.md`
-- `skills\review-after-sales-closure\scripts\self_test.py`
-- `skills\review-after-sales-closure\scripts\bootstrap.ps1`
-- `skills\review-after-sales-closure\scripts\run_server.ps1`
+```
+采集差评 → 发短信 → 追踪回复 → 验证评价删除 → 退款审批
+     ↓
+  飞书通知
+```
 
-## Working rules
+## Scripts
 
-- Keep the workflow split into layers:
-  1. import/classification
-  2. send queue generation
-  3. Twilio sending
-  4. status sync
-  5. reply handling
-  6. manual closure state updates
-- Prefer stable CSV-based integration for portability. Do not hard-couple the skill to one machine's live browser session.
-- Use real-send validation only against an explicitly approved verified test number.
-- Treat refund as a manual approval/process state, not a fully automatic financial action.
-- Treat review follow-up as an optional voluntary update request after resolution; do not hard-bind it as a required condition inside the automation.
+### `workflow/state.py`
+File-based case state (CSV: `data/cases.csv`).
+Fields: order_id, buyer_username, phone, product_id, rating, review_text, sms_sent, sms_reply, verification_status, refund_eligible, notes.
 
-## Standard operating flow
+### `workflow/collect_negative_reviews.py`
+Collects negative reviews from the FMCG store's product rating pages via `zhanfu-runtime`. Records: order_id, product_id, buyer_username, review_text.
 
-1. Export negative-review/contact data from ZhanFu or another source into CSV.
-2. Import with:
-   - `python -m app.scripts.import_zhanfu_reviews --csv <path>`
-3. Review queue with:
-   - `GET /campaign/queue`
-4. Send in small batches with:
-   - `python -m app.scripts.send_sms --auto-template --limit <n>`
-5. Sync delivery state with:
-   - `python -m app.scripts.sync_message_status --limit <n>`
-6. Process inbound replies and update cases.
-7. Mark refund/resolution/review-followup states manually.
-8. Use summary endpoints to track closure progress.
+```
+python workflow/collect_negative_reviews.py --store-id 2376919 --min-stars 4
+```
 
-## Validation modes
+### `workflow/send_sms.py`
+Sends SMS via Twilio to cases with `sms_sent == sms_pending`. Reads phone numbers from case state. Requires `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` env vars.
 
-### Stable self-test
-Use `scripts\self_test.py` to validate:
-- environment
-- DB init
-- sample CSV import
-- classification
-- queue generation
-- case state flow
+```
+python workflow/send_sms.py --dry-run          # test without sending
+python workflow/send_sms.py --limit 20
+```
 
-This mode does not require live ZhanFu or real SMS delivery.
+### `workflow/verify_review.py`
+Calls `zhanfu-browser/scripts/verify_review_deleted.py` for each case with a buyer reply. Updates `verification_status` and `refund_eligible`.
 
-### Live Twilio smoke test
-Use only when a verified test number is available and the user wants real-send validation.
+```
+python workflow/verify_review.py
+python workflow/verify_review.py --limit 10
+```
 
-## References
+### `workflow/notify.py`
+Sends Feishu interactive card to configured webhook (`FEISHU_WEBHOOK` env var).
 
-- `references\architecture.md`
-- `references\csv-schema.md`
+```
+python workflow/notify.py --type daily_summary
+python workflow/notify.py --type refund_queue
+```
+
+### `workflow/run_workflow.py`
+Full orchestrator. Run all steps or individual steps.
+
+```
+python workflow/run_workflow.py --collect --send-sms --verify --notify
+python workflow/run_workflow.py --collect --send-sms --verify --notify --dry-run
+```
+
+## State Flow
+
+```
+sms_pending → sms_sent → sms_replied → verify_pending
+                                         ↓
+                               verified_deleted → refund_eligible=yes
+                               verified_present → escalate
+```
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `TWILIO_ACCOUNT_SID` | Twilio Account SID |
+| `TWILIO_AUTH_TOKEN` | Twilio Auth Token |
+| `TWILIO_FROM_NUMBER` | Twilio sender number |
+| `FEISHU_WEBHOOK` | Feishu webhook URL for notifications |
+
+## Case State
+
+`data/cases.csv` — file-based state, portable across machines.
+
+| Field | Description |
+|-------|-------------|
+| `order_id` | TikTok order ID (primary key) |
+| `product_id` | Product ID (for review verification) |
+| `buyer_username` | Buyer's display name |
+| `phone` | Buyer's phone (for SMS) |
+| `sms_sent` | `sms_pending` / `sms_sent` |
+| `sms_reply` | Buyer's reply text |
+| `verification_status` | `verify_pending` / `verified_deleted` / `verified_present` / `escalated` |
+| `refund_eligible` | `yes` / `no` |
+| `notes` | Free-text notes |
+
+## Notes
+
+- Buyer phone numbers are only accessed for legitimate after-sales SMS outreach.
+- Refund approval is always manual — the system marks eligibility, never auto-approves.
+- Review verification relies on `zhanfu-browser/scripts/verify_review_deleted.py`.

@@ -193,12 +193,21 @@ def extract_safe_fields(order_id, body_text):
     return result
 
 
-def lookup_orders(review_rows, ws_endpoint: str | None = None, flush_every: int = 1, progress: bool = True):
+def lookup_orders(
+    review_rows,
+    ws_endpoint: str | None = None,
+    flush_every: int = 1,
+    progress: bool = True,
+    output_csv: Path | None = None,
+    output_json: Path | None = None,
+):
     if not ws_endpoint:
         ready, error = ensure_real_webdriver(FMCG_BROWSER_ID, startup_wait=90, reopen_once=True)
         if not ready:
             raise RuntimeError(error or "failed to get real webdriver endpoint")
         ws_endpoint = ready.ws_endpoint
+    output_csv = output_csv or OUTPUT_CSV
+    output_json = output_json or OUTPUT_JSON
     results = []
 
     with sync_playwright() as playwright:
@@ -240,10 +249,13 @@ def lookup_orders(review_rows, ws_endpoint: str | None = None, flush_every: int 
 
             results.append(merged)
             if flush_every and index % flush_every == 0:
-                write_csv(results, OUTPUT_CSV)
-                OUTPUT_JSON.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+                write_csv(results, output_csv)
+                output_json.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
             if progress:
-                print(json.dumps({"progress": {"current": index, "total": total, "ok": ok_count, "error": error_count, "order_id": order_id}}, ensure_ascii=False))
+                print(
+                    json.dumps({"progress": {"current": index, "total": total, "ok": ok_count, "error": error_count, "order_id": order_id}}, ensure_ascii=False),
+                    flush=True,
+                )
             page.wait_for_timeout(800)
 
         page.close()
@@ -263,13 +275,13 @@ def write_csv(rows, path):
 
 def main():
     review_rows = read_review_rows(INPUT_CSV)
-    results = lookup_orders(review_rows, ws_endpoint=None, flush_every=1)
+    results = lookup_orders(review_rows, ws_endpoint=None, flush_every=1, output_csv=OUTPUT_CSV, output_json=OUTPUT_JSON)
     write_csv(results, OUTPUT_CSV)
     OUTPUT_JSON.write_text(
         json.dumps(results, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(json.dumps({"csv": str(OUTPUT_CSV), "json": str(OUTPUT_JSON), "count": len(results)}, ensure_ascii=False))
+    print(json.dumps({"csv": str(OUTPUT_CSV), "json": str(OUTPUT_JSON), "count": len(results)}, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

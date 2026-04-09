@@ -6,54 +6,86 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import subprocess
 import sys
 import time
-from contextlib import redirect_stdout
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from zhanfu_runtime import (
+    close_browser,
+    connect_browser,
+    diagnose_store_entry,
+    ensure_zhanfu_ready,
+    get_browser_list,
+    pick_best_tab,
+    tab_body_text,
+    tab_url,
+    tab_title,
+    classify_page,
+)
 
-from zhanfu_runtime import close_browser, ensure_real_webdriver, is_connection_error, open_browser
-
-LABEL_DASHBOARD = "经营数据"
-LABEL_VERIFY = "请完成下列验证后继续:"
+LOGIN_HINTS = ["login", "登录", "sign in", "sign-in", "log in"]
 METRIC_LABELS = {
-    "gmv": "GMV",
-    "orders": "订单数",
-    "page_views": "页面浏览数",
-    "avg_visitors": "平均访客数",
+    "gmv": ["GMV"],
+    "customers": ["Customers", "客户数"],
+    "sku_orders": ["SKU orders", "订单数"],
+    "visitors": ["Visitors", "页面浏览数", "访客数"],
 }
 
 
-def parse_dashboard_lines(lines):
-    if LABEL_DASHBOARD not in lines:
+def parse_dashboard_lines(lines: list[str]) -> dict[str, str] | None:
+    joined = "\n".join(lines)
+    if not any(label in joined for labels in METRIC_LABELS.values() for label in labels):
         return None
-    start = lines.index(LABEL_DASHBOARD)
-    section = lines[start : start + 25]
 
-    def read_metric(label):
-        if label not in section:
-            return "", ""
-        idx = section.index(label)
-        value = section[idx + 1] if idx + 1 < len(section) else ""
-        change = section[idx + 2] if idx + 2 < len(section) else ""
-        return value, change
+    focus_start = 0
+    for anchor in ["Last 7 days", "经营数据", "Updated on", "今天"]:
+        if anchor in lines:
+            focus_start = max(0, lines.index(anchor))
+            break
+    focus_end = min(len(lines), focus_start + 50)
+    section = lines[focus_start:focus_end]
 
-    metrics = {}
-    for key, label in METRIC_LABELS.items():
-        value, change = read_metric(label)
+    def looks_like_value(text: str) -> bool:
+        text = (text or "").strip()
+        if not text:
+            return False
+        if text.startswith("$"):
+            return True
+        if any(ch.isdigit() for ch in text):
+            return True
+        if text.endswith("%"):
+            return True
+        if "/" in text and any(ch.isdigit() for ch in text):
+            return True
+        return False
+
+    def read_metric(labels: list[str]) -> tuple[str, str]:
+        for idx, line in enumerate(section):
+            if line not in labels:
+                continue
+            value = section[idx + 1] if idx + 1 < len(section) else ""
+            change = section[idx + 2] if idx + 2 < len(section) else ""
+            if not looks_like_value(value):
+                continue
+            if change and not looks_like_value(change):
+                change = ""
+            return value, change
+        return "", ""
+
+    metrics: dict[str, str] = {}
+    for key, labels in METRIC_LABELS.items():
+        value, change = read_metric(labels)
         metrics[key] = value
         metrics[f"{key}_change"] = change
     return metrics
 
 
-def try_click_today_tab(page):
+def try_click_today(tab) -> bool:
     for text in ["今天", "Today"]:
         try:
-            el = page.get_by_text(text, exact=True).first
-            if el.is_visible(timeout=2000):
-                el.click(timeout=5000)
+            ele = tab.ele(f"text:{text}", timeout=2)
+            if ele:
+                ele.click()
                 time.sleep(2)
                 return True
         except Exception:
@@ -61,121 +93,148 @@ def try_click_today_tab(page):
     return False
 
 
-def extract_dashboard_worker(ws_endpoint):
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.connect_over_cdp(ws_endpoint)
-        page = None
-        deadline = time.time() + 40
-        while time.time() < deadline and page is None:
-            for context in browser.contexts:
-                for candidate in context.pages:
-                    if not candidate.url.startswith("chrome-extension://"):
-                        page = candidate
-                        break
-                if page is not None:
-                    break
-            if page is None:
-                time.sleep(2)
-        if page is None:
-            return {"status": "error", "note": "no non-extension page found", "raw_text_excerpt": ""}
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
-        except Exception:
-            pass
-        page.wait_for_timeout(5000)
-        try_click_today_tab(page)
-        body_text = page.locator("body").inner_text(timeout=15000)
-        lines = [line.strip() for line in body_text.splitlines() if line.strip()]
-        parsed = parse_dashboard_lines(lines)
-        result = {
-            "page_url": page.url,
-            "page_title": page.title(),
-            "captcha_present": LABEL_VERIFY in body_text,
-            "raw_text_excerpt": "\n".join(lines[:60]),
-        }
-        if parsed is None:
-            result["status"] = "no_dashboard"
-            result["note"] = "dashboard labels not found in page text"
-        else:
-            result["status"] = "ok"
-            result["note"] = ""
-            result.update(parsed)
+def extract_sales_metrics(browser) -> dict[str, object]:
+    diagnosis = diagnose_store_entry(browser, try_open_store=True, try_goto_home=True)
+    tab, score = pick_best_tab(browser)
+    if tab is None:
+        return {"status": "error", "note": "没有找到可用页面标签", "diagnosis": diagnosis}
+
+    text = tab_body_text(tab)
+    try_click_today(tab)
+    text = tab_body_text(tab)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    metrics = parse_dashboard_lines(lines)
+    lower = text.lower()
+    page_url = tab_url(tab)
+    page_title = tab_title(tab)
+    page_kind = classify_page(page_url, page_title, text)
+
+    result: dict[str, object] = {
+        "status": "ok",
+        "page_url": page_url,
+        "page_title": page_title,
+        "page_kind": page_kind,
+        "page_score": score,
+        "raw_text_excerpt": "\n".join(lines[:120]),
+        "diagnosis": diagnosis,
+    }
+
+    if any(hint in lower for hint in LOGIN_HINTS):
+        result["status"] = "login_required"
+        result["note"] = "店铺已打开，但当前落在登录页，需要先手动登录"
         return result
 
+    if metrics is None:
+        result["status"] = "no_dashboard"
+        result["note"] = "已进入 seller 页面，但没读到标准经营数据区块"
+        return result
 
-def extract_dashboard(ws_endpoint):
-    command = [sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "--extract-ws", ws_endpoint]
-    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "extract subprocess failed")
-    return json.loads(result.stdout)
+    result.update(metrics)
+    result["note"] = ""
+    return result
 
 
-def flush_results(rows, output_json: Path, output_csv: Path):
+def flush_results(rows: list[dict[str, object]], output_json: Path, output_csv: Path) -> None:
     output_json.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     if rows:
+        fieldnames = [
+            "store_id", "store_name", "platform_name", "ip_address", "status", "note",
+            "page_url", "page_title", "page_kind", "gmv", "gmv_change", "customers", "customers_change",
+            "sku_orders", "sku_orders_change", "visitors", "visitors_change", "cdp_port", "ws_endpoint",
+        ]
         with output_csv.open("w", newline="", encoding="utf-8-sig") as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=list(rows[0].keys()))
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows)
+            for row in rows:
+                writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
-def collect_store(store_id: int, output_dir: Path, flush_every: int = 1):
+def collect_store(store_id: int, output_dir: Path, flush_every: int = 1, max_attempts: int = 2, keep_open_on_success: bool = False):
     output_dir.mkdir(parents=True, exist_ok=True)
     output_json = output_dir / f"sales_store_{store_id}.json"
     output_csv = output_dir / f"sales_store_{store_id}.csv"
-    rows = []
+    rows: list[dict[str, object]] = []
 
-    open_response = open_browser(store_id)
-    if open_response.get("ret") != 200:
-        raise RuntimeError(json.dumps(open_response, ensure_ascii=False))
-    ready, wait_error = ensure_real_webdriver(store_id, startup_wait=90, reopen_once=True)
-    if not ready:
-        raise RuntimeError(wait_error or "webdriver unavailable")
+    store_meta = next((item for item in get_browser_list() if int(item.get("mall_id", 0)) == int(store_id)), {})
+    attempts: list[dict[str, object]] = []
+    extracted: dict[str, object] | None = None
+    last_ready = None
 
-    try:
-        extracted = extract_dashboard(ready.ws_endpoint)
-    except Exception as exc:
-        if is_connection_error(str(exc)):
-            close_browser(store_id)
-            time.sleep(3)
-            open_browser(store_id)
-            ready, wait_error = ensure_real_webdriver(store_id, startup_wait=60, reopen_once=False)
-            if not ready:
-                raise RuntimeError(wait_error or "reopen failed")
-            extracted = extract_dashboard(ready.ws_endpoint)
-        else:
-            raise
+    for attempt in range(1, max_attempts + 1):
+        ensure = ensure_zhanfu_ready(store_id, startup_wait=60, cdp_wait=120, kill_first=False)
+        attempt_record = {
+            "attempt": attempt,
+            "webdriver_ready": bool(ensure.ready),
+            "webdriver_error": ensure.error,
+        }
+        if not ensure.ready:
+            attempt_record["status"] = "webdriver_unavailable"
+            attempts.append(attempt_record)
+            time.sleep(min(10, 2 + attempt * 2))
+            continue
+
+        last_ready = ensure.ready
+        browser = connect_browser(ensure.ready.port)
+        try:
+            extracted = extract_sales_metrics(browser)
+            attempt_record["status"] = extracted.get("status")
+            attempt_record["note"] = extracted.get("note", "")
+            attempts.append(attempt_record)
+        finally:
+            try:
+                browser.quit()
+            except Exception:
+                pass
+
+        if extracted and extracted.get("status") in {"ok", "no_dashboard", "login_required"}:
+            break
+        time.sleep(min(10, 2 + attempt * 2))
+
+    if extracted is None:
+        extracted = {"status": "error", "note": "unknown failure after retries"}
 
     row = {
         "store_id": store_id,
-        "webdriver_port": ready.port,
-        "ws_endpoint": ready.ws_endpoint,
+        "store_name": store_meta.get("mall_name", ""),
+        "platform_name": store_meta.get("platform_name", ""),
+        "ip_address": store_meta.get("ip_address", ""),
+        "cdp_port": last_ready.port if last_ready else None,
+        "ws_endpoint": last_ready.ws_endpoint if last_ready else None,
+        "attempt_count": len(attempts),
+        "attempts": attempts,
         **extracted,
     }
     rows.append(row)
     if flush_every:
         flush_results(rows, output_json, output_csv)
-    print(json.dumps({"progress": {"current": 1, "total": 1, "ok": 1 if row.get('status') == 'ok' else 0, "error": 0 if row.get('status') == 'ok' else 1, "item_id": store_id}}, ensure_ascii=False))
+    if extracted.get("status") == "ok" and not keep_open_on_success:
+        try:
+            close_browser(store_id)
+        except Exception:
+            pass
+    print(json.dumps({"progress": {"current": 1, "total": 1, "ok": 1 if row.get("status") == "ok" else 0, "error": 0 if row.get("status") == "ok" else 1, "item_id": store_id}}, ensure_ascii=False))
     return {"status": "ok", "count": len(rows), "json": str(output_json), "csv": str(output_csv)}
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Standard sales collector")
     parser.add_argument("--store-id", type=int, required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--flush-every", type=int, default=1)
-    parser.add_argument("--ws-endpoint")
+    parser.add_argument("--max-attempts", type=int, default=2)
+    parser.add_argument("--keep-open-on-success", action="store_true")
     args = parser.parse_args()
-    result = collect_store(args.store_id, Path(args.output_dir), flush_every=args.flush_every)
+
+    result = collect_store(
+        args.store_id,
+        Path(args.output_dir),
+        flush_every=args.flush_every,
+        max_attempts=args.max_attempts,
+        keep_open_on_success=args.keep_open_on_success,
+    )
     print(json.dumps(result, ensure_ascii=True))
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--extract-ws":
-        with redirect_stdout(sys.stderr):
-            result = extract_dashboard_worker(sys.argv[2])
-        sys.stdout.write(json.dumps(result, ensure_ascii=False))
-        sys.stdout.flush()
-    else:
-        main()
+    sys.stdout.reconfigure(encoding="utf-8")
+    main()

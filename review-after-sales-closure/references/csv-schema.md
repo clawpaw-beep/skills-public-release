@@ -16,6 +16,7 @@ Recommended full schema:
 - `rating`
 - `source`
 - `order_id`
+- `product_id`  (needed for review verification — order_id is the only key needed)
 - `sku`
 - `shop_id`
 - `shop_name`

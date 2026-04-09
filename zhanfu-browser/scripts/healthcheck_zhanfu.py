@@ -7,7 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
-from zhanfu_runtime import ensure_real_webdriver, get_browser_list
+from zhanfu_runtime import ensure_real_webdriver_detailed, get_browser_list
 
 OUTPUT = Path(r"C:\Users\9400\Documents\zhanfu_collect_runs\healthcheck_latest.json")
 OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -27,6 +27,7 @@ def main() -> None:
         "ready_for_collection": False,
         "mode": "deep" if args.deep else "basic",
         "note": "",
+        "fmcg_webdriver_detail": None,
     }
     try:
         stores = get_browser_list()
@@ -35,10 +36,33 @@ def main() -> None:
         report["fmcg_present"] = any(int(item.get("mall_id", 0)) == 2376919 for item in stores)
         report["fmcg_ready_hint"] = report["fmcg_present"]
         if args.deep and report["fmcg_present"]:
-            ready, error = ensure_real_webdriver(2376919, startup_wait=60, reopen_once=True)
-            report["fmcg_cdp_ready"] = bool(ready)
-            if not ready:
-                report["note"] = error
+            ensure = ensure_real_webdriver_detailed(2376919, startup_wait=60, reopen_once=True, reuse_existing_first=True)
+            report["fmcg_cdp_ready"] = bool(ensure.ready)
+            report["fmcg_webdriver_detail"] = {
+                "error": ensure.error,
+                "used_reopen": ensure.used_reopen,
+                "reused_existing": ensure.reused_existing,
+                "attempts": [
+                    {
+                        "attempt": item.attempt,
+                        "phase": item.phase,
+                        "ok": item.ok,
+                        "port": item.port,
+                        "ws_endpoint": item.ws_endpoint,
+                        "error": item.error,
+                        "waited_seconds": item.waited_seconds,
+                        "version_checks": item.version_checks,
+                        "reused_existing": item.reused_existing,
+                        "reopened_browser": item.reopened_browser,
+                        "open_response_ret": item.open_response_ret,
+                        "close_response_ret": item.close_response_ret,
+                        "version_payload": item.version_payload,
+                    }
+                    for item in ensure.attempts
+                ],
+            }
+            if not ensure.ready:
+                report["note"] = ensure.error
         report["ready_for_collection"] = report["api_reachable"] and report["fmcg_present"] and (report["fmcg_cdp_ready"] if args.deep else True)
     except Exception as exc:
         report["note"] = str(exc)

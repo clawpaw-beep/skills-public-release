@@ -1,46 +1,50 @@
-# Validated State (Publish-Safe Template)
+# Validated State
 
-Use this file to record a target machine's validated runtime state.
-Keep it updated for the current machine, but remove secrets and personal identifiers before publishing.
+> Machine-specific validated runtime state. Populate from `bootstrap_zhanfu_skill.py` or manually.
+> Keep this file updated; remove secrets before sharing.
 
 ## Runtime
 
-- Preferred runtime binary: `C:\path\to\ZhanFu\站斧.exe`
-- Optional fallback binary: `C:\Program Files\ZhanFu\站斧.exe`
-- Installed version: `5.x.x`
-- WebDriver HTTP API: `http://127.0.0.1:45008`
-- Known-good startup arguments:
-  - `--multip --run_type=web_driver --ipc_type=http --httpport=45008`
+- **Preferred binary**: `C:\Program Files\ZhanFu\zhanfu.exe` (192MB, 英文路径安装版)
+- **Fallback binary**: `C:\Users\9400\ZhanFu_5_2_88_portable\站斧.exe` (老版本便携)
+- **Version**: `5.2.9` (旧版为 `5.2.88`)
+- **WebDriver HTTP API**: `http://127.0.0.1:45008` (固定端口)
+- **Startup args**: `--multip --run_type=web_driver --ipc_type=http --httpport=45008`
 
-## Known drift or failure notes
+## CDP 端口说明（新版本重要）
 
-- Record startup-path, permission, or ChromeDriver init problems here.
-- Record how a broken session behaves on this machine.
-- Record the recovery preference order.
+- **CDP 端口范围**: `12620-12640`，**每次 OpenBrowser 动态分配**，无固定值
+- **发现方式**: 必须通过 `GET http://127.0.0.1:<port>/json` 遍历扫描
+- **老版本固定端口**: `12631`（新版不再适用）
+- **OpenBrowser 后需等待**: 5-10 秒后再扫描，否则可能找不到端口
 
-## Proven workflow
+## Startup Behavior
 
-- Open stores sequentially, not all at once.
-- Keep stores open if later CDP refresh or follow-up scraping is likely.
-- Do not trust `OpenBrowser` success alone.
-- Wait for a real `webSocketDebuggerUrl` from `http://127.0.0.1:<port>/json/version`.
-- Reuse an existing live CDP session whenever possible.
+- On this machine, the installed binary at `C:\Program Files\ZhanFu\zhanfu.exe` is preferred (英文路径).
+- The portable binary at `C:\Users\9400\ZhanFu_5_2_88_portable\站斧.exe` is the fallback.
+- 使用 `find_cdp()` 函数动态发现 CDP 端口，**不要写死端口号**。
 
-## Known-good outputs
+## Known Drift Notes
 
-- Sales export:
-  - `C:\path\to\Documents\zhanfu_sales_<timestamp>.csv`
-  - `C:\path\to\Documents\zhanfu_sales_<timestamp>.json`
-- Review exports:
-  - `C:\path\to\Documents\reviews_visible.csv`
-  - `C:\path\to\Documents\negative_review_followup.csv`
-- Safe order lookup:
-  - `C:\path\to\Documents\order_lookup_safe.csv`
-  - `C:\path\to\Documents\order_lookup_safe.json`
+_Update when you encounter new failure modes on this machine._
 
-## Store-specific notes
+## Verified Workflow
 
-- Primary FMCG store name: `example-store-fmcg`
-- Primary FMCG `mall_id`: `1000000`
-- Record any validated route hints or UI notes here.
-- Do not include phone numbers, full addresses, emails, or other buyer-private data.
+1. Open stores sequentially; keep open if CDP follow-up is likely.
+2. After `OpenBrowser`, call `find_cdp()` to discover the dynamic CDP port.
+3. **Use DrissionPage** for CDP connection — Playwright is not supported.
+4. Do not rely on `OpenBrowser` success response alone; always verify with `find_cdp()`.
+
+## Output Paths (this machine)
+
+- Sales exports: `C:\Users\9400\Documents\zhanfu_sales_<timestamp>.csv/.json`
+- Review exports: `C:\Users\9400\Documents\reviews_visible.csv`, `negative_review_followup.csv`
+- Safe order lookup: `C:\Users\9400\Documents\order_lookup_safe.csv/.json`
+- Daily run output: `C:\Users\9400\Documents\zhanfu_collect_runs\daily_run_<timestamp>\`
+
+## Primary Stores
+
+- **FMCG**: mall_id `2376919`
+- **SopamiPro**: mall_id `2276096`
+- **Tools**: mall_id `2273435`
+- **Hardware**: mall_id `2337386`

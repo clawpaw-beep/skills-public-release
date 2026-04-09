@@ -7,6 +7,7 @@ Build a portable after-sales closure workflow that can run on other Windows mach
 
 ### 1. Data acquisition
 Preferred stable input is CSV exported from ZhanFu or another upstream system.
+For direct ZhanFu collection, use `zhanfu-browser/scripts/collector_sales.py` to extract negative reviews and record: `order_id`, `product_id`, `page_number` (on the product rating page at collection time), `rating`, `review_text`.
 
 ### 2. Case ingestion
 Import into `review_cases` with normalized phone numbers and mapped metadata:
@@ -15,6 +16,7 @@ Import into `review_cases` with normalized phone numbers and mapped metadata:
 - review_username
 - buyer_username
 - order_id
+- product_id  (needed for review verification)
 - review_text
 - rating
 - phone_number
@@ -50,7 +52,20 @@ Map inbound replies to:
 - negative
 - unknown
 
-### 8. Closure updates
+### 8. Review deletion verification (CLOSED LOOP)
+
+**Key step.** When a buyer replies agreeing to delete their review:
+
+```
+1. Call zhanfu-browser/scripts/verify_review_deleted.py
+   verify_review_deleted(order_id, product_id)
+
+2. Result:
+   status = 'deleted'    → review not found on any page → eligible for refund
+   status = 'present'     → review still exists → re-send SMS or escalate
+```
+
+### 9. Closure updates
 Manual actions update:
 - refund_status
 - case_status

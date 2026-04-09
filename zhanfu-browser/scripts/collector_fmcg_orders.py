@@ -35,10 +35,17 @@ def main() -> None:
             raise SystemExit(error or "failed to get real webdriver endpoint")
         ws_endpoint = ready.ws_endpoint
 
-    results = lookup_orders(rows, ws_endpoint=ws_endpoint, flush_every=args.flush_every, progress=True)
+    results = lookup_orders(
+        rows,
+        ws_endpoint=ws_endpoint,
+        flush_every=args.flush_every,
+        progress=True,
+        output_csv=output_csv,
+        output_json=output_json,
+    )
     write_csv(results, output_csv)
     output_json.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"status": "ok", "count": len(results), "json": str(output_json), "csv": str(output_csv)}, ensure_ascii=True))
+    print(json.dumps({"status": "ok", "count": len(results), "json": str(output_json), "csv": str(output_csv)}, ensure_ascii=True), flush=True)
 
 
 if __name__ == "__main__":
