@@ -99,6 +99,58 @@ def parse_dashboard_lines(text: str) -> dict[str, str] | None:
     return metrics if metrics else None
 
 
+def try_close_verification(tab, max_retries: int = 2) -> dict[str, object]:
+    """
+    Attempt to close dismiss a TikTok verification/security challenge overlay.
+    Tries: X button, 关闭/Close/Cancel buttons, refreshing the page.
+
+    Returns:
+        {"closed": True/False, "attempts": N, "text_after": ...}
+    """
+    text_before = tab_body_text(tab)
+
+    close_strategies = [
+        lambda: tab.ele("@class:modal__close-btn", timeout=2),
+        lambda: tab.ele("text:关闭", timeout=2),
+        lambda: tab.ele("text:Close", timeout=2),
+        lambda: tab.ele("text:取消", timeout=2),
+        lambda: tab.ele("text:Cancel", timeout=2),
+        lambda: tab.ele("@class:sec Verify-svg", timeout=2),
+        lambda: tab.ele("@class:cap-back", timeout=2),
+    ]
+
+    for attempt in range(1, max_retries + 1):
+        for strategy in close_strategies:
+            try:
+                ele = strategy()
+                if ele:
+                    ele.click()
+                    time.sleep(3)
+                    text_after = tab_body_text(tab)
+                    # If the verification text is gone, we're good
+                    verify_indicators = ["验证", "安全验证", "captcha", "challenge", "账户异常"]
+                    if not any(v in text_after for v in verify_indicators):
+                        return {"closed": True, "attempts": attempt, "text_before": text_before[:200], "text_after": text_after[:200]}
+            except Exception:
+                pass
+
+        # Try refreshing the page as last resort
+        try:
+            tab.refresh()
+            time.sleep(4)
+        except Exception:
+            pass
+
+    text_after = tab_body_text(tab)
+    verify_still_present = any(v in text_after for v in ["验证", "安全验证", "captcha", "challenge", "账户异常"])
+    return {
+        "closed": not verify_still_present,
+        "attempts": max_retries * len(close_strategies),
+        "text_before": text_before[:200],
+        "text_after": text_after[:200],
+    }
+
+
 def try_click_today(tab, max_retries: int = 3) -> dict[str, object]:
     """
     Attempt to click the '今天'/'Today' filter tab.
@@ -168,6 +220,29 @@ def extract_sales_metrics(browser) -> dict[str, object]:
         result["status"] = "login_required"
         result["note"] = "店铺已打开，但当前落在登录页，需要先手动登录"
         return result
+
+    # Detect verification/security challenge page
+    verify_hints = ["验证", "安全验证", " captcha", "challenge", "安全检查", "账户异常", "账号异常"]
+    is_verification = page_kind == "verification" or any(h in lower for h in verify_hints)
+
+    if is_verification:
+        # Try to close the verification overlay and retry
+        close_result = try_close_verification(tab)
+        # Re-read metrics after closing
+        text = tab_body_text(tab)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        metrics = parse_dashboard_lines(text)
+        page_kind = classify_page(tab_url(tab), tab_title(tab), text)
+        lower = text.lower()
+        is_verification = page_kind == "verification" or any(h in lower for h in verify_hints)
+        result["today_filter"] = try_click_today(tab)
+        if is_verification:
+            result["status"] = "verification_required"
+            result["note"] = "页面持续在验证码/安全验证，已尽力关闭但仍存在"
+            result["verification_close_result"] = close_result
+            return result
+        result["verification_close_result"] = close_result
+        # Verification gone, continue with refreshed metrics
 
     if metrics is None:
         result["status"] = "no_dashboard"
