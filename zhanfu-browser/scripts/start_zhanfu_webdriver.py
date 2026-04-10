@@ -1,64 +1,102 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Start ZhanFu in WebDriver mode."""
+"""Start ZhanFu in WebDriver mode, wait for API to be ready."""
 
 import subprocess
 import os
 import sys
 import glob
 import time
+import socket
 
-# Find ZhanFu executable
-patterns = [
-    r'C:\Program Files\ZhanFu\*.exe',
-    r'C:\Users\9400\ZhanFu_5_2_88_portable\*.exe',
-]
+HTTP_PORT = 45008
+STARTUP_TIMEOUT = 30  # seconds to wait for port to open
 
-exe_path = None
-for pattern in patterns:
-    files = glob.glob(pattern)
-    for f in files:
-        basename = os.path.basename(f)
-        # Filter out uninstaller and other non-main executables
-        if 'Uninstall' not in basename and not basename.startswith('uninstaller'):
-            exe_path = f
-            break
-    if exe_path:
-        break
 
-if not exe_path:
-    print("ERROR: Could not find ZhanFu executable")
-    sys.exit(1)
+def find_zhanfu_exe():
+    """Find ZhanFu executable, checking known installation paths."""
+    candidates = [
+        r"C:\Program Files\ZhanFu\zhanfu.exe",
+        r"C:\Program Files (x86)\ZhanFu\zhanfu.exe",
+        r"C:\Users\9400\ZhanFu_5_2_88_portable\zhanfu.exe",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
 
-print(f"Found executable: {exe_path}")
+    # Try glob for portable version
+    for pattern in [
+        r"C:\Program Files\ZhanFu\*.exe",
+        r"C:\Users\9400\ZhanFu*\zhanfu.exe",
+    ]:
+        files = glob.glob(pattern)
+        for f in files:
+            basename = os.path.basename(f)
+            if "Uninstall" not in basename and not basename.startswith("uninstaller"):
+                return f
+    return None
 
-# Start ZhanFu in WebDriver mode
-args = [
-    exe_path,
-    '--multip',
-    '--run_type=web_driver',
-    '--ipc_type=http',
-    '--httpport=45008'
-]
 
-print(f"Starting with args: {args}")
+def is_port_open(port, host="127.0.0.1"):
+    try:
+        s = socket.socket()
+        s.settimeout(2)
+        s.connect((host, port))
+        s.close()
+        return True
+    except OSError:
+        return False
 
-proc = subprocess.Popen(
-    args,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
-)
 
-print(f"Started process with PID: {proc.pid}")
+def wait_for_api(port, timeout=STARTUP_TIMEOUT):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if is_port_open(port):
+            return True
+        time.sleep(1)
+    return False
 
-# Wait and check if it's still running
-time.sleep(3)
 
-if proc.poll() is None:
-    print("Process is running")
-else:
-    stdout, stderr = proc.communicate()
-    print(f"Process exited with code: {proc.returncode}")
-    print(f"stdout: {stdout}")
-    print(f"stderr: {stderr}")
+def start_zhanfu_webdriver():
+    """Start ZhanFu in WebDriver mode. Returns True if API is up."""
+    exe = find_zhanfu_exe()
+    if not exe:
+        print("ERROR: Could not find ZhanFu executable")
+        return False
+    print(f"Found executable: {exe}")
+
+    # Check if already running with API
+    if is_port_open(HTTP_PORT):
+        print(f"Port {HTTP_PORT} already open — ZhanFu WebDriver API may already be running")
+        return True
+
+    print(f"Starting ZhanFu WebDriver mode on port {HTTP_PORT}...")
+    args = [
+        exe,
+        "--multip",
+        "--run_type=web_driver",
+        "--ipc_type=http",
+        f"--httpport={HTTP_PORT}",
+    ]
+    print(f"Args: {' '.join(args)}")
+
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    print(f"Process started (PID={proc.pid}), waiting for API...")
+
+    if wait_for_api(HTTP_PORT, timeout=STARTUP_TIMEOUT):
+        print(f"SUCCESS: ZhanFu WebDriver API is up on port {HTTP_PORT}")
+        return True
+    else:
+        print(f"TIMEOUT: API did not respond on port {HTTP_PORT} after {STARTUP_TIMEOUT}s")
+        proc.terminate()
+        return False
+
+
+if __name__ == "__main__":
+    ok = start_zhanfu_webdriver()
+    sys.exit(0 if ok else 1)
