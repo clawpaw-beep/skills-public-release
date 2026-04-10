@@ -24,7 +24,6 @@ def find_zhanfu_exe():
         if os.path.exists(path):
             return path
 
-    # Try glob for portable version
     for pattern in [
         r"C:\Program Files\ZhanFu\*.exe",
         r"C:\Users\9400\ZhanFu*\zhanfu.exe",
@@ -61,11 +60,10 @@ def start_zhanfu_webdriver():
     """Start ZhanFu in WebDriver mode. Returns True if API is up."""
     exe = find_zhanfu_exe()
     if not exe:
-        print("ERROR: Could not find ZhanFu executable")
+        print(f"ERROR: Could not find ZhanFu executable", file=sys.stderr)
         return False
     print(f"Found executable: {exe}")
 
-    # Check if already running with API
     if is_port_open(HTTP_PORT):
         print(f"Port {HTTP_PORT} already open — ZhanFu WebDriver API may already be running")
         return True
@@ -78,23 +76,29 @@ def start_zhanfu_webdriver():
         "--ipc_type=http",
         f"--httpport={HTTP_PORT}",
     ]
-    print(f"Args: {' '.join(args)}")
+    print(f"CMD: {' '.join(args)}")
 
     proc = subprocess.Popen(
         args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     print(f"Process started (PID={proc.pid}), waiting for API...")
 
     if wait_for_api(HTTP_PORT, timeout=STARTUP_TIMEOUT):
         print(f"SUCCESS: ZhanFu WebDriver API is up on port {HTTP_PORT}")
         return True
-    else:
-        print(f"TIMEOUT: API did not respond on port {HTTP_PORT} after {STARTUP_TIMEOUT}s")
-        proc.terminate()
-        return False
+
+    # Capture any error output before terminating
+    try:
+        stdout, stderr = proc.communicate(timeout=5)
+        err_output = (stdout + stderr).decode("utf-8", errors="replace")
+    except Exception:
+        err_output = "(could not read error output)"
+    print(f"TIMEOUT: API did not respond on port {HTTP_PORT} after {STARTUP_TIMEOUT}s", file=sys.stderr)
+    print(f"Process stderr/stdout: {err_output[:500]}", file=sys.stderr)
+    proc.terminate()
+    return False
 
 
 if __name__ == "__main__":

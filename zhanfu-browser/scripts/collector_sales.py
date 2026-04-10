@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -32,65 +33,108 @@ METRIC_LABELS = {
 }
 
 
-def parse_dashboard_lines(lines: list[str]) -> dict[str, str] | None:
-    joined = "\n".join(lines)
-    if not any(label in joined for labels in METRIC_LABELS.values() for label in labels):
+def parse_dashboard_lines(text: str) -> dict[str, str] | None:
+    """
+    Parse KPI metrics from dashboard page text using regex.
+    Falls back to row-scan if regex fails.
+
+    Handles:
+    - GMV:  $12,345.67  12.3%
+    - 订单数:  123  12.3%
+    - Customers / 客户数
+    - Visitors / 访客数 / 页面浏览数
+    """
+    if not any(label in text for labels in METRIC_LABELS.values() for label in labels):
         return None
 
-    focus_start = 0
-    for anchor in ["Last 7 days", "经营数据", "Updated on", "今天"]:
-        if anchor in lines:
-            focus_start = max(0, lines.index(anchor))
-            break
-    focus_end = min(len(lines), focus_start + 50)
-    section = lines[focus_start:focus_end]
-
-    def looks_like_value(text: str) -> bool:
-        text = (text or "").strip()
-        if not text:
-            return False
-        if text.startswith("$"):
-            return True
-        if any(ch.isdigit() for ch in text):
-            return True
-        if text.endswith("%"):
-            return True
-        if "/" in text and any(ch.isdigit() for ch in text):
-            return True
-        return False
-
-    def read_metric(labels: list[str]) -> tuple[str, str]:
-        for idx, line in enumerate(section):
-            if line not in labels:
-                continue
-            value = section[idx + 1] if idx + 1 < len(section) else ""
-            change = section[idx + 2] if idx + 2 < len(section) else ""
-            if not looks_like_value(value):
-                continue
-            if change and not looks_like_value(change):
-                change = ""
-            return value, change
-        return "", ""
-
     metrics: dict[str, str] = {}
+
+    # Regex-based extraction: label on its own line, value + change on following lines
+    # Patterns:
+    #   GMV\n$1,234.56\n12.3%
+    #   Customers\n5,288\n6.14%
     for key, labels in METRIC_LABELS.items():
-        value, change = read_metric(labels)
-        metrics[key] = value
-        metrics[f"{key}_change"] = change
-    return metrics
+        for label in labels:
+            # Try: label line immediately followed by a number/currency line
+            pattern = re.escape(label) + r"\s*\n\s*([^\n]+)"
+            m = re.search(pattern, text, re.IGNORECASE)
+            if m:
+                raw_value = m.group(1).strip()
+                # Try to extract number + optional % change
+                num_m = re.search(r'([^\d]*[\d,]+\.?\d*[^\s,%]*)(?:\s+([\d.]+%))?', raw_value)
+                if num_m:
+                    value = num_m.group(1).strip()
+                    change = num_m.group(2).strip() if num_m.group(2) else ""
+                    if value:
+                        metrics[key] = value
+                        metrics[f"{key}_change"] = change
+                        break
+        if key in metrics:
+            continue
+
+        # Fallback: row-scan (original logic) for this metric only
+        lines = text.splitlines()
+        for idx, line in enumerate(lines):
+            if line.strip() not in labels:
+                continue
+            # Value is next non-empty line, change is line after that
+            value, change = "", ""
+            for offset in range(1, 5):
+                if idx + offset >= len(lines):
+                    break
+                candidate = lines[idx + offset].strip()
+                if not candidate:
+                    continue
+                if not value:
+                    if re.search(r'[\d,]+\.?\d*', candidate):
+                        value = candidate
+                elif not change and re.search(r'%', candidate):
+                    change = candidate
+                    break
+            if value:
+                metrics[key] = value
+                metrics[f"{key}_change"] = change
+                break
+
+    return metrics if metrics else None
 
 
-def try_click_today(tab) -> bool:
-    for text in ["今天", "Today"]:
-        try:
-            ele = tab.ele(f"text:{text}", timeout=2)
-            if ele:
-                ele.click()
-                time.sleep(2)
-                return True
-        except Exception:
-            pass
-    return False
+def try_click_today(tab, max_retries: int = 3) -> dict[str, object]:
+    """
+    Attempt to click the '今天'/'Today' filter tab.
+    Retries multiple times with increasing wait.
+
+    Returns:
+        {"clicked": True/False, "attempts": N, "text_before": ..., "text_after": ...}
+    """
+    text_before = tab_body_text(tab)
+    for attempt in range(1, max_retries + 1):
+        for label in ["今天", "Today"]:
+            try:
+                ele = tab.ele(f"text:{label}", timeout=3)
+                if ele:
+                    ele.click()
+                    time.sleep(3)
+                    # Verify page actually changed (not stuck on same content)
+                    text_after = tab_body_text(tab)
+                    if text_after != text_before:
+                        return {"clicked": True, "attempts": attempt, "text_before": text_before[:200], "text_after": text_after[:200]}
+                    # Content same as before — button may have been a no-op, retry
+            except Exception:
+                pass
+        time.sleep(2)  # wait before retry
+
+    text_after = tab_body_text(tab)
+    # Final verdict: did we actually land on "今天" section?
+    # Check for "今天" anchor in the text after clicking
+    has_today_anchor = "今天" in text_after or "Today" in text_after.lower()
+    return {
+        "clicked": has_today_anchor,
+        "attempts": max_retries,
+        "text_before": text_before[:200],
+        "text_after": text_after[:200],
+        "error": "could not switch to today filter after 3 attempts" if not has_today_anchor else "",
+    }
 
 
 def extract_sales_metrics(browser) -> dict[str, object]:
@@ -100,10 +144,10 @@ def extract_sales_metrics(browser) -> dict[str, object]:
         return {"status": "error", "note": "没有找到可用页面标签", "diagnosis": diagnosis}
 
     text = tab_body_text(tab)
-    try_click_today(tab)
+    click_result = try_click_today(tab)
     text = tab_body_text(tab)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    metrics = parse_dashboard_lines(lines)
+    metrics = parse_dashboard_lines(text)
     lower = text.lower()
     page_url = tab_url(tab)
     page_title = tab_title(tab)
@@ -117,6 +161,7 @@ def extract_sales_metrics(browser) -> dict[str, object]:
         "page_score": score,
         "raw_text_excerpt": "\n".join(lines[:120]),
         "diagnosis": diagnosis,
+        "today_filter": click_result,
     }
 
     if any(hint in lower for hint in LOGIN_HINTS):
@@ -129,9 +174,32 @@ def extract_sales_metrics(browser) -> dict[str, object]:
         result["note"] = "已进入 seller 页面，但没读到标准经营数据区块"
         return result
 
+    # Verify we actually got today's data, not 7-day data
+    gmv_text = metrics.get("gmv", "")
+    gmv_val = re.sub(r'[^\d.]', '', gmv_text)
+    if not gmv_val:
+        result["note"] = "WARNING: GMV value is empty — today filter may have failed"
+    else:
+        result["note"] = ""
+
     result.update(metrics)
-    result["note"] = ""
     return result
+
+
+def _save_diagnosis(store_id: int, attempt_records: list, extracted: dict) -> Path:
+    """Save full diagnosis records to workspace for post-mortem analysis."""
+    diag_dir = Path.home() / ".openclaw" / "workspace" / "zhanfu_diagnosis"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    path = diag_dir / f"diagnosis_{store_id}_{ts}.json"
+    payload = {
+        "store_id": store_id,
+        "ts": ts,
+        "attempt_records": attempt_records,
+        "extracted": extracted,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def flush_results(rows: list[dict[str, object]], output_json: Path, output_csv: Path) -> None:
@@ -179,6 +247,8 @@ def collect_store(store_id: int, output_dir: Path, flush_every: int = 1, max_att
             extracted = extract_sales_metrics(browser)
             attempt_record["status"] = extracted.get("status")
             attempt_record["note"] = extracted.get("note", "")
+            # Include today filter result in record
+            attempt_record["today_filter"] = extracted.get("today_filter", {})
             attempts.append(attempt_record)
         finally:
             try:
@@ -192,6 +262,11 @@ def collect_store(store_id: int, output_dir: Path, flush_every: int = 1, max_att
 
     if extracted is None:
         extracted = {"status": "error", "note": "unknown failure after retries"}
+
+    # Save full diagnosis if failed or suspicious
+    if extracted.get("status") != "ok" or extracted.get("note", "").startswith("WARNING"):
+        diag_path = _save_diagnosis(store_id, attempts, extracted)
+        print(f"[DIAGNOSIS SAVED] {diag_path}", file=sys.stderr)
 
     row = {
         "store_id": store_id,
