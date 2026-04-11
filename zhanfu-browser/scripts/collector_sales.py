@@ -153,33 +153,58 @@ def try_close_verification(tab, max_retries: int = 2) -> dict[str, object]:
 
 def try_click_today(tab, max_retries: int = 3) -> dict[str, object]:
     """
-    Attempt to click the '今天'/'Today' filter tab.
-    Retries multiple times with increasing wait.
+    Attempt to switch the dashboard to 'Today' view.
+
+    TikTok Seller Center uses a two-step dropdown:
+    1. Click the 'Last 7 days' / '今天' button to open the dropdown
+    2. Click 'Today' option inside the dropdown
 
     Returns:
         {"clicked": True/False, "attempts": N, "text_before": ..., "text_after": ...}
     """
     text_before = tab_body_text(tab)
+
     for attempt in range(1, max_retries + 1):
-        for label in ["今天", "Today"]:
+        dropdown_opened = False
+
+        # Step 1: Open the dropdown by clicking the 'Last 7 days' / '今天' button
+        for dropdown_label in ["Last 7 days", "今天"]:
             try:
-                ele = tab.ele(f"text:{label}", timeout=3)
-                if ele:
-                    ele.click()
-                    time.sleep(3)
-                    # Verify page actually changed (not stuck on same content)
-                    text_after = tab_body_text(tab)
-                    if text_after != text_before:
-                        return {"clicked": True, "attempts": attempt, "text_before": text_before[:200], "text_after": text_after[:200]}
-                    # Content same as before — button may have been a no-op, retry
+                dropdown_ele = tab.ele(f"text:{dropdown_label}", timeout=3)
+                if dropdown_ele:
+                    dropdown_ele.click()
+                    time.sleep(2)  # Wait for dropdown animation
+                    dropdown_opened = True
+                    break
             except Exception:
                 pass
-        time.sleep(2)  # wait before retry
+
+        if not dropdown_opened:
+            time.sleep(2)
+            continue
+
+        # Step 2: Click 'Today' inside the dropdown
+        for today_label in ["Today", "今天"]:
+            try:
+                today_ele = tab.ele(f"text:{today_label}", timeout=3)
+                if today_ele:
+                    today_ele.click()
+                    time.sleep(4)
+                    text_after = tab_body_text(tab)
+                    if text_after != text_before:
+                        return {
+                            "clicked": True,
+                            "attempts": attempt,
+                            "text_before": text_before[:200],
+                            "text_after": text_after[:200],
+                        }
+            except Exception:
+                pass
+
+        time.sleep(2)
 
     text_after = tab_body_text(tab)
-    # Final verdict: did we actually land on "今天" section?
-    # Check for "今天" anchor in the text after clicking
-    has_today_anchor = "今天" in text_after or "Today" in text_after.lower()
+    has_today_anchor = "今天" in text_after or ("Today" in text_after and "Last 7" not in text_after)
     return {
         "clicked": has_today_anchor,
         "attempts": max_retries,
